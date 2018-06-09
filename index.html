@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  
+
+  
+  <title>Hexo</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <meta property="og:type" content="website">
+<meta property="og:title" content="Hexo">
+<meta property="og:url" content="http://yoursite.com/index.html">
+<meta property="og:site_name" content="Hexo">
+<meta property="og:locale" content="default">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Hexo">
+  
+    <link rel="alternate" href="/atom.xml" title="Hexo" type="application/atom+xml">
+  
+  
+    <link rel="icon" href="/favicon.png">
+  
+  
+    <link href="//fonts.googleapis.com/css?family=Source+Code+Pro" rel="stylesheet" type="text/css">
+  
+  <link rel="stylesheet" href="/css/style.css">
+</head>
+
+<body>
+  <div id="container">
+    <div id="wrap">
+      <header id="header">
+  <div id="banner"></div>
+  <div id="header-outer" class="outer">
+    <div id="header-title" class="inner">
+      <h1 id="logo-wrap">
+        <a href="/" id="logo">Hexo</a>
+      </h1>
+      
+    </div>
+    <div id="header-inner" class="inner">
+      <nav id="main-nav">
+        <a id="main-nav-toggle" class="nav-icon"></a>
+        
+          <a class="main-nav-link" href="/">Home</a>
+        
+          <a class="main-nav-link" href="/archives">Archives</a>
+        
+      </nav>
+      <nav id="sub-nav">
+        
+          <a id="nav-rss-link" class="nav-icon" href="/atom.xml" title="RSS Feed"></a>
+        
+        <a id="nav-search-btn" class="nav-icon" title="Search"></a>
+      </nav>
+      <div id="search-form-wrap">
+        <form action="//google.com/search" method="get" accept-charset="UTF-8" class="search-form"><input type="search" name="q" class="search-form-input" placeholder="Search"><button type="submit" class="search-form-submit">&#xF002;</button><input type="hidden" name="sitesearch" value="http://yoursite.com"></form>
+      </div>
+    </div>
+  </div>
+</header>
+      <div class="outer">
+        <section id="main">
+  
+    <article id="post-指纹补充说明" class="article article-type-post" itemscope itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2018/06/08/指纹补充说明/" class="article-date">
+  <time datetime="2018-06-08T09:26:39.223Z" itemprop="datePublished">2018-06-08</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+        <p>#Fingerprint HAL跟TEE中Token跟其他细节处理(以QSEE为例)#</p>
+<p>##一.  AuthToken 处理##</p>
+<p><img src="http://i.imgur.com/mH3xNoH.png" alt="AuthToken process"></p>
+<p>###1.AuthToken 格式及定义（CA侧要跟TA侧相同）###</p>
+<p>&nbsp;&nbsp;&nbsp;&nbsp;<strong>AuthToken format</strong></p>
+<p><img src="http://i.imgur.com/fJsDyS2.png" alt="AuthToken_Format"></p>
+<pre><code>typedef struct __attribute__((__packed__)) {
+    uint8_t version;  // Current version is 0
+    uint64_t challenge;
+    uint64_t user_id;             // secure user ID, not Android user ID
+    uint64_t authenticator_id;    // secure authenticator ID
+    uint32_t authenticator_type;  // hw_authenticator_type_t, in network order
+    uint64_t timestamp;           // in network order
+    uint8_t hmac[32];
+}     hw_auth_token_t;
+
+
+    Version ：此token的版本号
+
+    Challenge：就是前面调用preEnroll的到的64位随机数，防止此次enroll被第三方假冒
+
+    User SID ： 安全性id，不是android user id
+
+    Athenticator ID： 用于标明不同的认证权限
+
+    Authenticator Type：0x00表示Gatekeeper，0x01表示Fingerprint
+
+    Timestamp：最近一次开机时间戳
+
+    AuthToken HMAC key： 用一个特殊的key和SHA-256算法去计算前面一堆参数后，得到的一个 hmac值，保证前面参数的合法性和安全性。
+</code></pre><p>###2.从Keymaster TA 与Auth Token key###</p>
+<ol>
+<li>Fingerprint HAL Open时,Fingerprint HAL(以后简称HAL)向Keymaster发送<strong>KEYMASTER_GET_AUTH_TOKEN_KEY</strong> 命令，并得到返回的加密key。</li>
+<li>HAL向指纹TA(以后简称TA)发送命令，以内存数据共享方式，向TA传输从Keymater 获取到的加密key.</li>
+<li>TA 使用<strong>qsee_decapsulate_inter_app_message()</strong>方法，通过加密key 来获取Keymaster TA的解密key </li>
+<li>TA在<strong>authenticate</strong>时候，自己创建Token 并调用QSEE的<strong>qsee_hmac(</strong>)方法，使用<strong>QSEE_HMAC_SHA256</strong> 类型算法来加密token ,并共享给其他TA (Keymaster TA,Gatekeeper TA ,还有bio TA)</li>
+</ol>
+<pre><code>retval = QSEEcom_start_app(&amp;keymaster_handle,
+                        OXI_KEYMASTER_APP_PATH,
+                        OXI_KEYMASTER_APP_NAME,
+                        shared_buffer_zise);
+
+
+
+km_get_auth_token_req_t* command = (km_get_auth_token_req_t*)
+    keymaster_handle-&gt;ion_sbuffer;
+
+uint32_t command_length = QSEECOM_ALIGN(sizeof(km_get_auth_token_req_t*));
+
+km_get_auth_token_rsp_t* response = (km_get_auth_token_rsp_t*)
+    (keymaster_handle-&gt;ion_sbuffer+command_length);
+
+
+command-&gt;cmd_id = KEYMASTER_GET_AUTH_TOKEN_KEY;
+command-&gt;auth_type = HW_AUTH_FINGERPRINT;
+
+uint32_t response_length = shared_buffer_zise-command_length;
+
+retval = QSEEcom_send_cmd(keymaster_handle,
+                        command,
+                        command_length,
+                        response,
+                        response_length);
+</code></pre><p>###二. Fingerprint HAL 跟Fingerprint TA 细节处理###</p>
+<p>####1.pre_enroll()方法：####</p>
+<p>TA侧创建challenge并保存，TA把此challenge回传给HAL,在pre_enroll 方法里面，直接return 这个challeng值</p>
+<p>####2.enroll(…,const hw_auth_token_t *hat,…)方法：####</p>
+<p>enroll 的时候，系统会传一个token给Fingerprint HAL，HAL层需要把此token传给TA侧,TA做如下相关处理：</p>
+<p>1).TA侧会对token里面的challenge跟在pre_enroll时候，TA保存的challenge 的值做对比。</p>
+<p>2).TA侧会，根据从keymaster TA得到的加密key,用<strong>qsee_hmac(</strong>)方法，使用<strong>QSEE_HMAC_SHA256</strong>类型的HMAC 加密，比较两个hmac 数组内容是否一致,<br> 如果不一致，则中断enroll进程，直接return掉。</p>
+<pre><code>//核对传递下来的token-&gt;challenge与之前preEnroll阶段保存的g_challenge是否相同
+if (token &amp;&amp; token-&gt;challenge == g_challenge) {
+    g_user_id = token-&gt;user_id;
+} else {
+    LOGE(LOG_TAG &quot;[%s] invalid or null auth token&quot;, __func__);
+}
+
+//检测token版本是否相同
+if (token &amp;&amp; token-&gt;version != cmd-&gt;data.enroll.system_auth_token_version) {
+    LOGE(LOG_TAG &quot;[%s] invalid hat version code detected&quot;, __func__);
+    err = ERROR_INVALID_HAT_VERSION;
+    break;
+}
+//检测authenticator_type版本是否相同
+if (token &amp;&amp; (token-&gt;authenticator_type &amp; GF_HW_AUTH_FINGERPRINT)) {
+    LOGE(LOG_TAG &quot;[%s] invalid challenge detected&quot;, __func__);
+    err = ERROR_INVALID_CHALLENGE;
+    break;
+}
+/*token中，除了hmac之外的数据取出来，然后拿这部分数据用key和相应加密算法生成hmac*/
+cpl_memcpy(&amp;hat, token, sizeof(gf_hw_auth_token_t));
+cpl_memset(&amp;(hat.hmac), 0, hmac_len);
+generate_hmac(&amp;hat);
+/*比对新生成的hmac和之前上层传递下来token中自带的hmac是否相同，如果相同则认为没本次enroll合法，接下来IC就会切换到一种采图的工作模式*/
+if (0 != cpl_memcmp(hat.hmac, token-&gt;hmac, hmac_len)) {
+    LOGE(LOG_TAG &quot;[%s] token authenticate failed&quot;, __func__);
+    err = ERROR_UNTRUSTED_ENROLL;
+    break;
+}
+</code></pre><p>####3.user_id问题：####</p>
+<p><strong>user_id是在enroll的时候系统传给fingerprint HAL层的，HAL层需要把这个值传到fingerprint TA中与指纹模板进行绑定,enroll时候系统传进来的user_id</strong><br><strong>是多少，则authenticate 成功后回传给系统的user_id就应该是多少</strong>。</p>
+<p>1).user_id 在 enroll 完成后生成指纹模板时，与指纹模板绑定。<br>2)<strong>在指纹匹配成功后</strong>，获取user_id，把此值赋值给TA创建的Token中的user_id元素。</p>
+<p>3).TA会对Token 进行HMA 算法加密。</p>
+<p>4).TA会把包含user_id 的Token 传给fingerprint Hal,由Hal 回调给系统。</p>
+<p>####4.authenticator_id问题:####</p>
+<p>在enroll 成功完成之后，需要根据生成指纹模板的数据库id 来生成authenticator_id，此来生成authenticator_id 会在两个地方使用;</p>
+<p>1).此值需要回传给fingerprint Hal，在get_authenticator_id()方法里面，直接返回。</p>
+<p>2).<strong>在指纹匹配成功后</strong>,在TA创建Token，把此值赋值给Token中的authenticator_id元素。</p>
+<p>3).TA会对Token 进行HMA 算法加密。</p>
+<p>4).TA会把包含authenticator_id 的Token 传给fingerprint Hal,由Hal 回调给系统。</p>
+<p>####5.operation_id问题：####</p>
+<p>这个值很重要，因为支付的bio接口会用到此值，使用步骤如下：</p>
+<p>1).authenticate(…, uint64_t operation_id,…)的时候，系统会把这个值传递给fingerprint HAL, Hal 层需要传递此值到fingerprint TA;</p>
+<p>2).<strong>在指纹匹配成功后</strong>，在TA创建Token，把此值赋值给Token中的challenge元素。</p>
+<p>3).TA会对Token 进行HMAC算法加密</p>
+<p>4)调用bio接口set_auth_result(),把此operation_id 传给bio 接口。</p>
+<pre><code>    int32_t set_auth_result(boolean result, uint64_t finger_id, uint64_t operation_id)
+{
+ int32_t status = 0;
+ bio_result bio_res;
+ BIO_ERROR_CODE bio_err;
+
+ bio_res.method = BIO_FINGERPRINT_MATCHING;
+ bio_res.result = result;
+ bio_res.user_id = BIO_NA;
+
+ if (bio_res.result) {
+      bio_res.user_entity_id = finger_id;
+      bio_res.transaction_id = operation_id;//session_id
+ } else {
+      bio_res.user_entity_id = BIO_NA;
+      bio_res.transaction_id = BIO_NA;
+ }
+ if ((bio_err = bio_set_auth_result(&amp;bio_res, NULL)) != BIO_NO_ERROR) {
+      status = -1;
+ }
+ return status;
+}
+</code></pre><p>###三. 支付宝、微信支付###</p>
+<p>支付这块，需要实现两个接口，一个是指纹list接口，一个是匹配成功的接口。</p>
+<p>1).指纹list 接口，需要在初始化，指纹模板 增、更新、删除的时候调用，具体需要参照代码</p>
+<p>2).匹配成功的接口(上面的set_auth_result就是)，需要在指纹匹配成功之后，在TA进行Token HMAC 加密之后调用</p>
+<p>这个两个接口最终都是调用bio API 的bio_set_auth_result() 方法。我们指纹厂商，只需要实现前面的细节，跟上面两个接口即可，剩下的都是平台，TEE 还有支付厂商的事情。</p>
+<p>###四.遗留问题###</p>
+<p>手机启动时候，Fingerprint Hal也会调用get_authenticator_id() 方法，如果，我们录入有多个指纹，要给系统回传哪个authenticator_id。这个也需要研究下，<br>我这边的猜想是传最近匹配成功的那个指纹的authenticator_id。后边需要研究下这个问题</p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="http://yoursite.com/2018/06/08/指纹补充说明/" data-id="cji6puzrf00016hzolivyrgdj" class="article-share-link">Share</a>
+      
+      
+    </footer>
+  </div>
+  
+</article>
+
+
+  
+    <article id="post-hello-world" class="article article-type-post" itemscope itemprop="blogPost">
+  <div class="article-meta">
+    <a href="/2018/06/08/hello-world/" class="article-date">
+  <time datetime="2018-06-08T08:47:11.510Z" itemprop="datePublished">2018-06-08</time>
+</a>
+    
+  </div>
+  <div class="article-inner">
+    
+    
+      <header class="article-header">
+        
+  
+    <h1 itemprop="name">
+      <a class="article-title" href="/2018/06/08/hello-world/">Hello World</a>
+    </h1>
+  
+
+      </header>
+    
+    <div class="article-entry" itemprop="articleBody">
+      
+        <p>Welcome to <a href="https://hexo.io/" target="_blank" rel="noopener">Hexo</a>! This is your very first post. Check <a href="https://hexo.io/docs/" target="_blank" rel="noopener">documentation</a> for more info. If you get any problems when using Hexo, you can find the answer in <a href="https://hexo.io/docs/troubleshooting.html" target="_blank" rel="noopener">troubleshooting</a> or you can ask me on <a href="https://github.com/hexojs/hexo/issues" target="_blank" rel="noopener">GitHub</a>.</p>
+<h2 id="Quick-Start"><a href="#Quick-Start" class="headerlink" title="Quick Start"></a>Quick Start</h2><h3 id="Create-a-new-post"><a href="#Create-a-new-post" class="headerlink" title="Create a new post"></a>Create a new post</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">$ hexo new <span class="string">"My New Post"</span></span><br></pre></td></tr></table></figure>
+<p>More info: <a href="https://hexo.io/docs/writing.html" target="_blank" rel="noopener">Writing</a></p>
+<h3 id="Run-server"><a href="#Run-server" class="headerlink" title="Run server"></a>Run server</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">$ hexo server</span><br></pre></td></tr></table></figure>
+<p>More info: <a href="https://hexo.io/docs/server.html" target="_blank" rel="noopener">Server</a></p>
+<h3 id="Generate-static-files"><a href="#Generate-static-files" class="headerlink" title="Generate static files"></a>Generate static files</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">$ hexo generate</span><br></pre></td></tr></table></figure>
+<p>More info: <a href="https://hexo.io/docs/generating.html" target="_blank" rel="noopener">Generating</a></p>
+<h3 id="Deploy-to-remote-sites"><a href="#Deploy-to-remote-sites" class="headerlink" title="Deploy to remote sites"></a>Deploy to remote sites</h3><figure class="highlight bash"><table><tr><td class="gutter"><pre><span class="line">1</span><br></pre></td><td class="code"><pre><span class="line">$ hexo deploy</span><br></pre></td></tr></table></figure>
+<p>More info: <a href="https://hexo.io/docs/deployment.html" target="_blank" rel="noopener">Deployment</a></p>
+
+      
+    </div>
+    <footer class="article-footer">
+      <a data-url="http://yoursite.com/2018/06/08/hello-world/" data-id="cji6puzqp00006hzo0l1odc3l" class="article-share-link">Share</a>
+      
+      
+    </footer>
+  </div>
+  
+</article>
+
+
+  
+
+
+</section>
+        
+          <aside id="sidebar">
+  
+    
+
+  
+    
+
+  
+    
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Archives</h3>
+    <div class="widget">
+      <ul class="archive-list"><li class="archive-list-item"><a class="archive-list-link" href="/archives/2018/06/">June 2018</a></li></ul>
+    </div>
+  </div>
+
+
+  
+    
+  <div class="widget-wrap">
+    <h3 class="widget-title">Recent Posts</h3>
+    <div class="widget">
+      <ul>
+        
+          <li>
+            <a href="/2018/06/08/指纹补充说明/">(no title)</a>
+          </li>
+        
+          <li>
+            <a href="/2018/06/08/hello-world/">Hello World</a>
+          </li>
+        
+      </ul>
+    </div>
+  </div>
+
+  
+</aside>
+        
+      </div>
+      <footer id="footer">
+  
+  <div class="outer">
+    <div id="footer-info" class="inner">
+      &copy; 2018 John Doe<br>
+      Powered by <a href="http://hexo.io/" target="_blank">Hexo</a>
+    </div>
+  </div>
+</footer>
+    </div>
+    <nav id="mobile-nav">
+  
+    <a href="/" class="mobile-nav-link">Home</a>
+  
+    <a href="/archives" class="mobile-nav-link">Archives</a>
+  
+</nav>
+    
+
+<script src="//ajax.googleapis.com/ajax/libs/jquery/2.0.3/jquery.min.js"></script>
+
+
+  <link rel="stylesheet" href="/fancybox/jquery.fancybox.css">
+  <script src="/fancybox/jquery.fancybox.pack.js"></script>
+
+
+<script src="/js/script.js"></script>
+
+
+
+  </div>
+</body>
+</html>
