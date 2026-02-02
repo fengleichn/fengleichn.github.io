@@ -2,3 +2,18 @@ baseURL = 'https://fengleichn.github.io/'
 languageCode = 'zh-cn'
 title = '冯磊的博客'
 theme = 'PaperMod'
+
+
+[taxonomies]
+  category = "categories"
+  tag = "tags"
+  series = "series"
+
+
+[params]
+  mainSections = [
+    "android-system",
+    "linux-kernel",
+    "notes"
+  ]
+
