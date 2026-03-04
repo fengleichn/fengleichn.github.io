@@ -15,4 +15,4 @@ title: 读书与系统性学习
 - [Android 内核设计思想](./android-kernel-design/)
 - [Android 内核剖析](./android-kernel-analysis/)
 - [深入理解计算机系统（CSAPP）](./csapp/)
-
+- [Java多线程编程核心技术（第2版）](./core_java_multithreading_programming/)
